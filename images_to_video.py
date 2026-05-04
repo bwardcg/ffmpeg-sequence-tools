@@ -81,7 +81,7 @@ def detect_sequence_in_directory(directory):
 
 
 def build_ffmpeg_cmd(directory, base, ext, padding, fps, crf, preset,
-                     first_frame, output_path):
+                     first_frame, output_path, audio_path=None):
     """Build the ffmpeg command list."""
     # ffmpeg input pattern:  Name.%04d.png
     input_pattern = os.path.join(directory, f"{base}.%0{padding}d{ext}")
@@ -90,10 +90,18 @@ def build_ffmpeg_cmd(directory, base, ext, padding, fps, crf, preset,
         "-framerate", str(fps),
         "-start_number", str(first_frame),
         "-i", input_pattern,
+    ]
+    if audio_path:
+        cmd += ["-i", audio_path]
+    cmd += [
         "-c:v", "libx264",
         "-crf", str(crf),
         "-preset", preset,
         "-pix_fmt", "yuv420p",   # broad compatibility
+    ]
+    if audio_path:
+        cmd += ["-c:a", "aac", "-b:a", "192k", "-shortest"]
+    cmd += [
         "-movflags", "+faststart",
         output_path
     ]
@@ -128,7 +136,7 @@ class ImagesToVideoGUI:
         self.root.resizable(False, False)
         self.root.configure(bg=self.BG)
         self.root.attributes("-topmost", True)
-        w, h = 540, 420
+        w, h = 540, 460
         sx = (self.root.winfo_screenwidth() - w) // 2
         sy = (self.root.winfo_screenheight() - h) // 2
         self.root.geometry(f"{w}x{h}+{sx}+{sy}")
@@ -195,7 +203,7 @@ class ImagesToVideoGUI:
 
         # ── Output filename ──────────────────────────────────────────
         out_frame = tk.Frame(self.root, bg=self.BG)
-        out_frame.pack(pady=(6, 12), **px, fill="x")
+        out_frame.pack(pady=(6, 6), **px, fill="x")
 
         tk.Label(out_frame, text="Output:", font=("Segoe UI", 10),
             fg=self.FG, bg=self.BG).pack(side="left")
@@ -211,6 +219,29 @@ class ImagesToVideoGUI:
             font=("Segoe UI", 9), fg=self.FG, bg=self.BTN_BG,
             activebackground=self.SURFACE, relief="flat", cursor="hand2",
             command=self._browse_output).pack(side="left")
+
+        # ── Audio file (optional) ────────────────────────────────────
+        audio_frame = tk.Frame(self.root, bg=self.BG)
+        audio_frame.pack(pady=(0, 12), **px, fill="x")
+
+        tk.Label(audio_frame, text="Audio:", font=("Segoe UI", 10),
+            fg=self.FG, bg=self.BG).pack(side="left")
+
+        self.audio_var = tk.StringVar(value="")
+        audio_entry = tk.Entry(audio_frame, textvariable=self.audio_var,
+            font=("Segoe UI", 9), bg=self.SURFACE, fg=self.FG,
+            insertbackground=self.FG, relief="flat", bd=2)
+        audio_entry.pack(side="left", padx=(6, 4), fill="x", expand=True)
+
+        tk.Button(audio_frame, text="...", width=3,
+            font=("Segoe UI", 9), fg=self.FG, bg=self.BTN_BG,
+            activebackground=self.SURFACE, relief="flat", cursor="hand2",
+            command=self._browse_audio).pack(side="left")
+
+        tk.Button(audio_frame, text="✕", width=2,
+            font=("Segoe UI", 9), fg=self.RED, bg=self.BTN_BG,
+            activebackground=self.SURFACE, relief="flat", cursor="hand2",
+            command=lambda: self.audio_var.set("")).pack(side="left", padx=(2, 0))
 
         # ── Progress ─────────────────────────────────────────────────
         self.progress = ttk.Progressbar(self.root, length=490, mode="determinate",
@@ -252,6 +283,17 @@ class ImagesToVideoGUI:
         )
         if path:
             self.output_var.set(path)
+
+    def _browse_audio(self):
+        path = filedialog.askopenfilename(
+            title="Select Audio File (optional)",
+            filetypes=[
+                ("Audio files", "*.wav *.mp3 *.aac *.flac *.ogg *.m4a *.wma"),
+                ("All files", "*.*")],
+            initialdir=self.output_dir
+        )
+        if path:
+            self.audio_var.set(path)
 
     def _cancel(self):
         self.cancelled = True
@@ -298,6 +340,12 @@ class ImagesToVideoGUI:
             messagebox.showerror("No Output", "Please specify an output file path.")
             return
 
+        audio_path = self.audio_var.get().strip() or None
+        if audio_path and not os.path.isfile(audio_path):
+            messagebox.showerror("Audio Not Found",
+                f"Audio file not found:\n{audio_path}")
+            return
+
         # Warn if file exists
         if os.path.isfile(output_path):
             if not messagebox.askyesno("Overwrite?",
@@ -308,13 +356,14 @@ class ImagesToVideoGUI:
         self.convert_btn.config(state="disabled", bg=self.BTN_BG)
         self._ui(self._set_status, "Converting...")
         threading.Thread(target=self._run_convert,
-            args=(fps, crf, preset, output_path), daemon=True).start()
+            args=(fps, crf, preset, output_path, audio_path), daemon=True).start()
 
-    def _run_convert(self, fps, crf, preset, output_path):
+    def _run_convert(self, fps, crf, preset, output_path, audio_path=None):
         try:
             cmd = build_ffmpeg_cmd(
                 self.directory, self.base, self.ext, self.padding,
-                fps, crf, preset, self.first, output_path
+                fps, crf, preset, self.first, output_path,
+                audio_path=audio_path
             )
 
             si = subprocess.STARTUPINFO()

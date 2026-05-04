@@ -10,6 +10,7 @@ import sys
 import os
 import winreg
 import ctypes
+import subprocess
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONVERTER_SCRIPT = os.path.join(SCRIPT_DIR, "video_to_sequence.py")
@@ -110,6 +111,7 @@ def main():
     if not is_admin():
         print("Relaunching as Administrator...")
         # Re-run this script elevated
+        params = " ".join([f'"{a}"' for a in sys.argv])
         ctypes.windll.shell32.ShellExecuteW(
             None, "runas", sys.executable, f'"{os.path.abspath(__file__)}" {action}', None, 1
         )

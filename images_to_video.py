@@ -94,6 +94,9 @@ def build_ffmpeg_cmd(directory, base, ext, padding, fps, crf, preset,
     if audio_path:
         cmd += ["-i", audio_path]
     cmd += [
+        # Pad to even dimensions if needed (yuv420p requires both w & h even).
+        # Uses a 1px black pad when odd; no-op when already even.
+        "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
         "-c:v", "libx264",
         "-crf", str(crf),
         "-preset", preset,
@@ -366,6 +369,14 @@ class ImagesToVideoGUI:
                 audio_path=audio_path
             )
 
+            # Log the full command for debugging
+            _log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "images_to_video_debug.log")
+            try:
+                with open(_log_file, "a", encoding="utf-8") as lf:
+                    lf.write(f"\n[CONVERT] cmd: {cmd}\n")
+            except:
+                pass
+
             si = subprocess.STARTUPINFO()
             si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             si.wShowWindow = 0
@@ -427,17 +438,48 @@ class ImagesToVideoGUI:
             else:
                 # Collect error
                 err_text = b"".join(stderr_lines).decode('utf-8', errors='replace')
-                # Get last useful line
+
+                # Log full stderr for debugging
+                try:
+                    with open(_log_file, "a", encoding="utf-8") as lf:
+                        lf.write(f"[CONVERT] returncode: {proc.returncode}\n")
+                        lf.write(f"[CONVERT] stderr:\n{err_text}\n")
+                except:
+                    pass
+
+                # Find the actual error — skip generic "Conversion failed!" line
                 err_lines = [l.strip() for l in err_text.splitlines() if l.strip()]
-                last_err = err_lines[-1] if err_lines else "Unknown error"
-                if len(last_err) > 80:
-                    last_err = last_err[:80] + "..."
-                self._ui(self._set_status, f"Error: {last_err}")
+                # Filter out progress lines and the generic final message
+                useful = [l for l in err_lines
+                          if not l.startswith("frame=")
+                          and not l.startswith("size=")
+                          and l.lower() != "conversion failed!"]
+                # The real error is usually in the last few useful lines
+                if useful:
+                    # Take last 3 useful lines for context
+                    detail = "\n".join(useful[-3:])
+                else:
+                    detail = err_text.strip()[-200:] if err_text.strip() else "Unknown error"
+
+                self._ui(self._set_status, f"Error: ffmpeg failed (code {proc.returncode})")
+                self._ui(self._show_error_detail, detail, err_text)
                 self._ui(self._enable_convert)
 
         except Exception as e:
             self._ui(self._set_status, f"Error: {e}")
             self._ui(self._enable_convert)
+
+    def _show_error_detail(self, detail, full_stderr):
+        """Show a messagebox with the actual ffmpeg error details."""
+        try:
+            # Truncate for messagebox display
+            if len(detail) > 500:
+                detail = detail[:500] + "\n..."
+            messagebox.showerror("FFmpeg Error",
+                f"Conversion failed.\n\n{detail}\n\n"
+                f"(Full log written to images_to_video_debug.log)")
+        except:
+            pass
 
     def _enable_convert(self):
         try:
@@ -533,4 +575,33 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import time as _time
+    _log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "images_to_video_debug.log")
+    _log_f = open(_log_file, "w", encoding="utf-8")
+
+    def _log(msg):
+        _log_f.write(f"[{_time.strftime('%H:%M:%S')}] {msg}\n")
+        _log_f.flush()
+
+    try:
+        _log(f"argv: {sys.argv}")
+        _log(f"python: {sys.executable}")
+        if len(sys.argv) > 1:
+            _log(f"path: {sys.argv[1]}")
+        main()
+        _log("main() returned normally")
+
+    except Exception:
+        import traceback
+        err = traceback.format_exc()
+        _log(f"UNHANDLED EXCEPTION:\n{err}")
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showerror("FFmpeg Sequence Tools - Error", err)
+        except:
+            pass
+        sys.exit(1)
+    finally:
+        _log("script exiting")
+        _log_f.close()

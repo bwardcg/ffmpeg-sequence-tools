@@ -431,4 +431,15 @@ def main():
         sys.exit(1)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        import traceback
+        err = traceback.format_exc()
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showerror("FFmpeg Sequence Tools - Error", err)
+        except:
+            pass
+        sys.exit(1)

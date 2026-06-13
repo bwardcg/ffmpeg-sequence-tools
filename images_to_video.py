@@ -6,8 +6,13 @@ Usage:
     python images_to_video.py "<path_to_directory>"
 
 When invoked on a single image file, it auto-detects the sequence in the
-same directory based on the naming pattern (Name.####.ext) and converts
-all frames into an MP4 video.
+same directory based on the naming pattern and converts all frames into
+an MP4 video.
+
+Supported naming patterns:
+    Name.0001.ext   (dot separator)
+    Name_0001.ext   (underscore separator)
+    Name-0001.ext   (hyphen separator)
 """
 import subprocess, sys, os, json, re, threading, glob, time
 import tkinter as tk
@@ -18,17 +23,18 @@ DEFAULT_FPS = 24
 DEFAULT_CRF = 18          # quality: 0 = lossless, 51 = worst; ~18 is visually lossless
 DEFAULT_PRESET = "medium"  # x264 speed preset
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".exr", ".tga", ".tif", ".tiff", ".bmp", ".dpx"}
+AUDIO_EXTENSIONS = {".wav", ".mp3", ".aac", ".flac", ".ogg", ".m4a", ".wma"}
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 _SEQ_PATTERN = re.compile(
-    r'^(?P<base>.+?)[._](?P<num>\d{2,8})(?P<ext>\.\w+)$'
+    r'^(?P<base>.+?)(?P<sep>[._\-])(?P<num>\d{2,8})(?P<ext>\.\w+)$'
 )
 
 def detect_sequence(seed_path):
     """Given one image file, figure out the full sequence.
 
-    Returns (directory, base_name, extension, padding, first_frame, last_frame, count)
+    Returns (directory, base_name, extension, padding, first_frame, last_frame, count, separator)
     or None if no sequence detected.
     """
     directory = os.path.dirname(seed_path)
@@ -38,6 +44,7 @@ def detect_sequence(seed_path):
         return None
 
     base = m.group("base")
+    sep = m.group("sep")
     ext = m.group("ext").lower()
     padding = len(m.group("num"))
 
@@ -45,19 +52,19 @@ def detect_sequence(seed_path):
     frames = []
     for f in os.listdir(directory):
         fm = _SEQ_PATTERN.match(f)
-        if fm and fm.group("base") == base and fm.group("ext").lower() == ext and len(fm.group("num")) == padding:
+        if fm and fm.group("base") == base and fm.group("sep") == sep and fm.group("ext").lower() == ext and len(fm.group("num")) == padding:
             frames.append(int(fm.group("num")))
 
     if not frames:
         return None
 
     frames.sort()
-    return (directory, base, ext, padding, frames[0], frames[-1], len(frames))
+    return (directory, base, ext, padding, frames[0], frames[-1], len(frames), sep)
 
 
 def detect_sequence_in_directory(directory):
     """Scan a directory and return info for the largest image sequence found."""
-    sequences = {}  # key = (base, ext, padding) -> list of frame numbers
+    sequences = {}  # key = (base, sep, ext, padding) -> list of frame numbers
     for f in os.listdir(directory):
         if not os.path.isfile(os.path.join(directory, f)):
             continue
@@ -67,7 +74,7 @@ def detect_sequence_in_directory(directory):
         ext = m.group("ext").lower()
         if ext not in IMAGE_EXTENSIONS:
             continue
-        key = (m.group("base"), ext, len(m.group("num")))
+        key = (m.group("base"), m.group("sep"), ext, len(m.group("num")))
         sequences.setdefault(key, []).append(int(m.group("num")))
 
     if not sequences:
@@ -75,16 +82,16 @@ def detect_sequence_in_directory(directory):
 
     # pick the sequence with the most frames
     best_key = max(sequences, key=lambda k: len(sequences[k]))
-    base, ext, padding = best_key
+    base, sep, ext, padding = best_key
     frames = sorted(sequences[best_key])
-    return (directory, base, ext, padding, frames[0], frames[-1], len(frames))
+    return (directory, base, ext, padding, frames[0], frames[-1], len(frames), sep)
 
 
 def build_ffmpeg_cmd(directory, base, ext, padding, fps, crf, preset,
-                     first_frame, output_path, audio_path=None):
+                     first_frame, output_path, audio_path=None, sep="."):
     """Build the ffmpeg command list."""
-    # ffmpeg input pattern:  Name.%04d.png
-    input_pattern = os.path.join(directory, f"{base}.%0{padding}d{ext}")
+    # ffmpeg input pattern:  Name.%04d.png  or  Name_%04d.png  etc.
+    input_pattern = os.path.join(directory, f"{base}{sep}%0{padding}d{ext}")
     cmd = [
         "ffmpeg", "-y",
         "-framerate", str(fps),
@@ -111,6 +118,30 @@ def build_ffmpeg_cmd(directory, base, ext, padding, fps, crf, preset,
     return cmd
 
 
+def find_audio_file(*search_dirs):
+    """Search directories for an audio file. Returns the first match or None.
+
+    Prefers files whose name matches a common video/sequence base name.
+    """
+    found = []
+    seen = set()
+    for d in search_dirs:
+        if not d or not os.path.isdir(d):
+            continue
+        try:
+            for f in os.listdir(d):
+                ext = os.path.splitext(f)[1].lower()
+                if ext in AUDIO_EXTENSIONS:
+                    full = os.path.join(d, f)
+                    if full not in seen:
+                        seen.add(full)
+                        found.append(full)
+        except OSError:
+            continue
+    # Return first audio file found (closest directory wins)
+    return found[0] if found else None
+
+
 # ── GUI ──────────────────────────────────────────────────────────────────────
 
 class ImagesToVideoGUI:
@@ -128,7 +159,7 @@ class ImagesToVideoGUI:
 
     def __init__(self, seq_info, output_dir=None):
         self.directory, self.base, self.ext, self.padding, \
-            self.first, self.last, self.count = seq_info
+            self.first, self.last, self.count, self.sep = seq_info
         # output_dir controls where the .mp4 is saved;
         # defaults to the same directory as the images
         self.output_dir = output_dir or self.directory
@@ -158,7 +189,7 @@ class ImagesToVideoGUI:
         ).pack(pady=(18, 4), **px, anchor="w")
 
         # ── Sequence info ────────────────────────────────────────────
-        seq_label = f"{self.base}.{'#' * self.padding}{self.ext}"
+        seq_label = f"{self.base}{self.sep}{'#' * self.padding}{self.ext}"
         tk.Label(self.root, text=f"Sequence:  {seq_label}",
             font=("Segoe UI", 10), fg=self.FG_DIM, bg=self.BG
         ).pack(pady=(0, 2), **px, anchor="w")
@@ -230,7 +261,10 @@ class ImagesToVideoGUI:
         tk.Label(audio_frame, text="Audio:", font=("Segoe UI", 10),
             fg=self.FG, bg=self.BG).pack(side="left")
 
-        self.audio_var = tk.StringVar(value="")
+        # Auto-detect audio file in image dir, parent dir, or output dir
+        auto_audio = find_audio_file(self.directory, self.output_dir,
+            os.path.dirname(os.path.normpath(self.directory)))
+        self.audio_var = tk.StringVar(value=auto_audio or "")
         audio_entry = tk.Entry(audio_frame, textvariable=self.audio_var,
             font=("Segoe UI", 9), bg=self.SURFACE, fg=self.FG,
             insertbackground=self.FG, relief="flat", bd=2)
@@ -366,7 +400,7 @@ class ImagesToVideoGUI:
             cmd = build_ffmpeg_cmd(
                 self.directory, self.base, self.ext, self.padding,
                 fps, crf, preset, self.first, output_path,
-                audio_path=audio_path
+                audio_path=audio_path, sep=self.sep
             )
 
             # Log the full command for debugging
@@ -563,7 +597,10 @@ def main():
             root.withdraw()
             messagebox.showinfo("No Sequence Found",
                 f"Could not detect an image sequence from:\n{os.path.basename(path)}\n\n"
-                "Expected naming like: Name.0001.png")
+                "Expected naming patterns:\n"
+                "  Name.0001.png\n"
+                "  Name_0001.png\n"
+                "  Name-0001.png")
             sys.exit(0)
         ImagesToVideoGUI(seq)
 

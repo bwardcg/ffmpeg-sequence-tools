@@ -110,7 +110,7 @@ def build_ffmpeg_cmd(directory, base, ext, padding, fps, crf, preset,
         "-pix_fmt", "yuv420p",   # broad compatibility
     ]
     if audio_path:
-        cmd += ["-c:a", "aac", "-b:a", "192k", "-shortest"]
+        cmd += ["-c:a", "aac", "-b:a", "192k"]
     cmd += [
         "-movflags", "+faststart",
         output_path

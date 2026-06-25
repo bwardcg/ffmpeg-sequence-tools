@@ -88,7 +88,8 @@ def detect_sequence_in_directory(directory):
 
 
 def build_ffmpeg_cmd(directory, base, ext, padding, fps, crf, preset,
-                     first_frame, output_path, audio_path=None, sep="."):
+                     first_frame, output_path, audio_path=None, sep=".",
+                     frame_count=0):
     """Build the ffmpeg command list."""
     # ffmpeg input pattern:  Name.%04d.png  or  Name_%04d.png  etc.
     input_pattern = os.path.join(directory, f"{base}{sep}%0{padding}d{ext}")
@@ -111,6 +112,11 @@ def build_ffmpeg_cmd(directory, base, ext, padding, fps, crf, preset,
     ]
     if audio_path:
         cmd += ["-c:a", "aac", "-b:a", "192k"]
+        # Lock output duration to the image sequence length so audio
+        # can neither extend nor truncate the video.
+        if frame_count > 0 and fps > 0:
+            duration = frame_count / fps
+            cmd += ["-t", f"{duration:.4f}"]
     cmd += [
         "-movflags", "+faststart",
         output_path
@@ -400,7 +406,8 @@ class ImagesToVideoGUI:
             cmd = build_ffmpeg_cmd(
                 self.directory, self.base, self.ext, self.padding,
                 fps, crf, preset, self.first, output_path,
-                audio_path=audio_path, sep=self.sep
+                audio_path=audio_path, sep=self.sep,
+                frame_count=self.count
             )
 
             # Log the full command for debugging
